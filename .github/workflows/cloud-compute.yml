@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 jobs:
-  计算:
+  compute:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout libchai
