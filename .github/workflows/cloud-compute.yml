@@ -81,12 +81,12 @@ jobs:
       - name: 执行 encode
         if: ${{ inputs.command == 'encode' }}
         run: |
-          参数=""
+          ARGS=""
           S="${{ inputs.scheme }}"
           E="${{ inputs.encodables }}"
           if [ -z "$E" ] && [ -f "${S%.yaml}.txt" ]; then E="${S%.yaml}.txt"; fi
-          if [ -n "$E" ]; then 参数="-e $E"; fi
-          ./target/release/chai encode "$S" $参数
+          if [ -n "$E" ]; then ARGS="-e $E"; fi
+          ./target/release/chai encode "$S" $ARGS
 
       - name: 执行 optimize
         if: ${{ inputs.command == 'optimize' }}
