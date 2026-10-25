@@ -11,9 +11,9 @@ on:
           - optimize
         default: encode
       scheme:
-        description: 方案文件名（hanzi-chai.github.io/examples 下，如 yuling.yaml）
+        description: 方案文件名（拼音名如 yuling.yaml/mswb.yaml/zhengma.yaml；fetch.sh 已拉的中文名如 米十五笔.yaml 也支持）
         required: true
-        default: 米十五笔.yaml
+        default: yuling.yaml
       encodables:
         description: 频率序列表文件（-e），留空则尝试用同名 .txt
         required: false
@@ -42,9 +42,24 @@ jobs:
           chmod +x fetch.sh
           ./fetch.sh
 
-      - name: 拉取用户指定方案（从 hanzi-chai.github.io）
+      - name: 拉取用户指定方案（多源回退）
         run: |
-          curl -fsSL -o "${{ inputs.scheme }}" "https://raw.githubusercontent.com/hanzi-chai/hanzi-chai.github.io/main/examples/${{ inputs.scheme }}"
+          S="${{ inputs.scheme }}"
+          # 1) fetch.sh 可能已下载到 examples/（中文名，如 米十五笔.yaml）
+          if [ -f "examples/$S" ]; then
+            cp "examples/$S" "./$S"
+            echo "使用本地 examples/$S"
+          fi
+          # 2) 回退到 github.io/examples（拼音名，如 yuling.yaml / mswb.yaml，覆盖全部方案）
+          if [ ! -f "$S" ]; then
+            curl -fsSL -o "$S" "https://raw.githubusercontent.com/hanzi-chai/hanzi-chai.github.io/main/examples/$S" || true
+          fi
+          # 3) 仍找不到则报错退出（给出可用名提示）
+          if [ ! -f "$S" ]; then
+            echo "::error::找不到方案 $S。可用名示例：yuling.yaml / mswb.yaml / zhengma.yaml / tianma.yaml（github.io/examples 拼音名），或 米十五笔.yaml（fetch.sh 已拉）"
+            exit 1
+          fi
+          echo "已就位方案：$S"
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
