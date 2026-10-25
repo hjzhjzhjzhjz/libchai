@@ -4,18 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: 计算命令（encode 算编码+指标 / optimize 优化布局）
+        description: 计算命令（analyze=方案结构静态分析[大根/小根等]；encode/optimize 需要字频拆分表 elements.yaml）
         type: choice
         options:
+          - analyze
           - encode
           - optimize
-        default: encode
+        default: analyze
       scheme:
         description: 方案文件名（拼音名如 yuling.yaml/mswb.yaml/zhengma.yaml；fetch.sh 已拉的中文名如 米十五笔.yaml 也支持）
         required: true
         default: yuling.yaml
+      elements_url:
+        description: encode/optimize 用的字频拆分表(elements.yaml)下载地址；留空则跳过 encode/optimize
+        required: false
+        default: ''
       encodables:
-        description: 频率序列表文件（-e），留空则尝试用同名 .txt
+        description: 本地已存在的 elements 文件路径（优先级高于 elements_url）
         required: false
         default: ''
       threads:
@@ -45,26 +50,25 @@ jobs:
       - name: 拉取用户指定方案（多源回退）
         run: |
           S="${{ inputs.scheme }}"
-          # 1) fetch.sh 可能已下载到 examples/（中文名，如 米十五笔.yaml）
           if [ -f "examples/$S" ]; then
             cp "examples/$S" "./$S"
             echo "使用本地 examples/$S"
           fi
-          # 2) 回退到 github.io/examples（拼音名，如 yuling.yaml / mswb.yaml，覆盖全部方案）
           if [ ! -f "$S" ]; then
             curl -fsSL -o "$S" "https://raw.githubusercontent.com/hanzi-chai/hanzi-chai.github.io/main/examples/$S" || true
           fi
-          # 3) 仍找不到则报错退出（给出可用名提示）
           if [ ! -f "$S" ]; then
-            echo "::error::找不到方案 $S。可用名示例：yuling.yaml / mswb.yaml / zhengma.yaml / tianma.yaml（github.io/examples 拼音名），或 米十五笔.yaml（fetch.sh 已拉）"
+            echo "::error::找不到方案 $S。可用名示例：yuling.yaml / mswb.yaml / zhengma.yaml（github.io/examples 拼音名），或 米十五笔.yaml（fetch.sh 已拉）"
             exit 1
           fi
           echo "已就位方案：$S"
 
       - name: 安装 Rust 工具链
+        if: ${{ inputs.command != 'analyze' }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: 缓存 cargo 构建产物
+        if: ${{ inputs.command != 'analyze' }}
         uses: actions/cache@v4
         with:
           path: |
@@ -76,19 +80,62 @@ jobs:
             ${{ runner.os }}-cargo-libchai-
 
       - name: 编译 chai
+        if: ${{ inputs.command != 'analyze' }}
         run: cargo build --release
 
-      - name: 执行 encode
-        if: ${{ inputs.command == 'encode' }}
+      - name: 准备 elements（字频拆分表）
+        if: ${{ inputs.command != 'analyze' }}
         run: |
-          ARGS=""
-          S="${{ inputs.scheme }}"
           E="${{ inputs.encodables }}"
-          if [ -z "$E" ] && [ -f "${S%.yaml}.txt" ]; then E="${S%.yaml}.txt"; fi
-          if [ -n "$E" ]; then ARGS="-e $E"; fi
-          ./target/release/chai encode "$S" $ARGS
+          U="${{ inputs.elements_url }}"
+          if [ -z "$E" ] && [ -n "$U" ]; then
+            curl -fsSL -o elements.yaml "$U" || true
+            E="elements.yaml"
+          fi
+          if [ -z "$E" ]; then
+            echo "::warning::未提供 elements（字频拆分表），跳过 encode/optimize。analyze 模式不受此影响。"
+          else
+            echo "ELEMENTS=$E" >> "$GITHUB_ENV"
+          fi
+
+      - name: 执行 encode
+        if: ${{ inputs.command == 'encode' && env.ELEMENTS != '' }}
+        run: ./target/release/chai encode "${{ inputs.scheme }}" -e "$ELEMENTS"
 
       - name: 执行 optimize
-        if: ${{ inputs.command == 'optimize' }}
+        if: ${{ inputs.command == 'optimize' && env.ELEMENTS != '' }}
+        run: timeout "${{ inputs.optimize_seconds }}" ./target/release/chai optimize "${{ inputs.scheme }}" -e "$ELEMENTS" -t "${{ inputs.threads }}" || true
+
+      - name: 执行 analyze（方案结构静态分析）
+        if: ${{ inputs.command == 'analyze' }}
         run: |
-          timeout "${{ inputs.optimize_seconds }}" ./target/release/chai optimize "${{ inputs.scheme }}" -t "${{ inputs.threads }}" || true
+          python3 -m pip install pyyaml -q
+          python3 - <<'PY'
+          import yaml
+          from collections import Counter
+          S = "${{ inputs.scheme }}"
+          cfg = yaml.safe_load(open(S, encoding='utf-8'))
+          info = cfg.get('info', {}) or {}
+          form = cfg.get('form', {}) or {}
+          mapping = form.get('mapping', {}) or {}
+          lens = Counter(len(str(v)) for v in mapping.values())
+          大根 = lens.get(3, 0)
+          小根 = lens.get(2, 0)
+          其他 = {k: v for k, v in mapping.items() if len(str(v)) not in (2, 3)}
+          alphabet = form.get('alphabet', '')
+          print('========== 方案结构分析 ==========')
+          print(f"方案名      : {info.get('name', S)}")
+          print(f"作者        : {info.get('author', '?')}")
+          print(f"方案版本    : {info.get('version', '?')}")
+          print(f"字根-编码映射总数 : {len(mapping)}")
+          print(f"字母表      : {alphabet}（{len(str(alphabet))} 键）")
+          print('----------------------------------')
+          print(f"大根（三编码）: {大根}")
+          print(f"小根（双编码）: {小根}")
+          if 大根 + 小根 > 0:
+              print(f"大根占比    : {大根/(大根+小根)*100:.1f}%")
+          print(f"其他长度码  : {len(其他)} 个（非2非3，示例如下）")
+          for k, v in list(其他.items())[:20]:
+              print(f"    {k}: {v}")
+          print('==================================')
+          PY
