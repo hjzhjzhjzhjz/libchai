@@ -1,0 +1,79 @@
+name: 云端计算
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 计算命令（encode 算编码+指标 / optimize 优化布局）
+        type: choice
+        options:
+          - encode
+          - optimize
+        default: encode
+      scheme:
+        description: 方案文件名（hanzi-chai.github.io/examples 下，如 yuling.yaml）
+        required: true
+        default: 米十五笔.yaml
+      encodables:
+        description: 频率序列表文件（-e），留空则尝试用同名 .txt
+        required: false
+        default: ''
+      threads:
+        description: optimize 使用的线程数
+        required: false
+        default: '4'
+      optimize_seconds:
+        description: optimize 最大运行秒数（超时自动结束）
+        required: false
+        default: '120'
+
+permissions:
+  contents: read
+
+jobs:
+  计算:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout libchai
+        uses: actions/checkout@v4
+
+      - name: 下载静态资源与示例方案
+        run: |
+          chmod +x fetch.sh
+          ./fetch.sh
+
+      - name: 拉取用户指定方案（从 hanzi-chai.github.io）
+        run: |
+          curl -fsSL -o "${{ inputs.scheme }}" "https://raw.githubusercontent.com/hanzi-chai/hanzi-chai.github.io/main/examples/${{ inputs.scheme }}"
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo 构建产物
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-libchai-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-libchai-
+
+      - name: 编译 chai
+        run: cargo build --release
+
+      - name: 执行 encode
+        if: ${{ inputs.command == 'encode' }}
+        run: |
+          参数=""
+          S="${{ inputs.scheme }}"
+          E="${{ inputs.encodables }}"
+          if [ -z "$E" ] && [ -f "${S%.yaml}.txt" ]; then E="${S%.yaml}.txt"; fi
+          if [ -n "$E" ]; then 参数="-e $E"; fi
+          ./target/release/chai encode "$S" $参数
+
+      - name: 执行 optimize
+        if: ${{ inputs.command == 'optimize' }}
+        run: |
+          timeout "${{ inputs.optimize_seconds }}" ./target/release/chai optimize "${{ inputs.scheme }}" -t "${{ inputs.threads }}" || true
